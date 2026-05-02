@@ -1,0 +1,816 @@
+import { useState, useEffect } from "react";
+import { format, startOfWeek, addDays, addWeeks, subWeeks, isSameDay, parseISO } from "date-fns";
+import { es } from "date-fns/locale";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
+import { AppSidebar } from "@/components/layout/app-sidebar";
+import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription
+} from "@/components/ui/dialog";
+import {
+  ChevronLeft, ChevronRight, Plus, Calendar, Clock,
+  Repeat, X, Pencil, AlertCircle, CalendarDays, Search, User,
+} from "lucide-react";
+import { useListPatients } from "@workspace/api-client-react";
+import { useAuth } from "@/contexts/auth-context";
+
+const HOUR_PX = 32;
+const START_HOUR = 7;
+const END_HOUR = 21;
+const TOTAL_HOURS = END_HOUR - START_HOUR;
+const GRID_HEIGHT = TOTAL_HOURS * HOUR_PX;
+
+const TIPO_COLORS: Record<string, { bg: string; text: string; border: string; dot: string }> = {
+  sesion:     { bg: "bg-stone-50",  text: "text-stone-700",  border: "border-stone-200",  dot: "bg-stone-500"  },
+  evaluacion: { bg: "bg-rose-50",   text: "text-rose-800",   border: "border-rose-200",   dot: "bg-rose-500"   },
+  reunion:    { bg: "bg-amber-50",  text: "text-amber-800",  border: "border-amber-200",  dot: "bg-amber-500"  },
+  otro:       { bg: "bg-muted/50",  text: "text-foreground/80",  border: "border-border",  dot: "bg-muted-foreground/40"  },
+};
+const TIPO_LABELS: Record<string, string> = {
+  sesion: "Sesión", evaluacion: "Evaluación", reunion: "Reunión", otro: "Otro",
+};
+
+type Cita = {
+  id: number;
+  titulo: string;
+  fecha: string;
+  horaInicio: string;
+  horaFin: string;
+  tipo: string;
+  status: string;
+  notas?: string | null;
+  patientId?: number | null;
+  professionalId?: number | null;
+  serieId?: string | null;
+  repetirSemanal?: boolean;
+  repetirHasta?: string | null;
+};
+
+function timeToMinutes(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function minutesFromStart(t: string): number {
+  return timeToMinutes(t) - START_HOUR * 60;
+}
+
+function topPx(t: string): number {
+  return (minutesFromStart(t) / 60) * HOUR_PX;
+}
+
+function heightPx(start: string, end: string): number {
+  const mins = timeToMinutes(end) - timeToMinutes(start);
+  return Math.max((mins / 60) * HOUR_PX, 24);
+}
+
+const DAYS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const TIPOS = ["sesion", "evaluacion", "reunion", "otro"];
+
+function weekDays(baseMonday: Date): Date[] {
+  return Array.from({ length: 7 }, (_, i) => addDays(baseMonday, i));
+}
+
+function getMonday(d: Date): Date {
+  return startOfWeek(d, { weekStartsOn: 1 });
+}
+
+function formatWeekRange(monday: Date): string {
+  const sunday = addDays(monday, 6);
+  const mStr = format(monday, "d", { locale: es });
+  const sStr = format(sunday, "d 'de' MMMM 'de' yyyy", { locale: es });
+  return `${mStr}–${sStr}`;
+}
+
+const DEFAULT_FORM = {
+  titulo: "", fecha: format(new Date(), "yyyy-MM-dd"),
+  horaInicio: "09:00", horaFin: "10:00",
+  tipo: "sesion", notas: "",
+  repetirSemanal: false, repetirHasta: "", sinFechaFin: true,
+  patientId: "", professionalId: "",
+};
+
+export default function AgendaPage() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [currentMonday, setCurrentMonday] = useState<Date>(() => getMonday(new Date()));
+  const days = weekDays(currentMonday);
+  const rangeStart = format(currentMonday, "yyyy-MM-dd");
+  const rangeEnd   = format(addDays(currentMonday, 6), "yyyy-MM-dd");
+
+  const { data: citas = [], isLoading } = useQuery<Cita[]>({
+    queryKey: ["citas", rangeStart, rangeEnd],
+    queryFn: async () => {
+      const res = await fetch(`/api/citas?start=${rangeStart}&end=${rangeEnd}`);
+      if (!res.ok) throw new Error("Error al cargar citas");
+      return res.json();
+    },
+  });
+
+  const { data: patients = [] } = useListPatients();
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [form, setForm] = useState({ ...DEFAULT_FORM });
+  const [isSaving, setIsSaving] = useState(false);
+  const [patientSearch, setPatientSearch] = useState("");
+  const [showPatientDropdown, setShowPatientDropdown] = useState(false);
+
+  const [selectedCita, setSelectedCita] = useState<Cita | null>(null);
+  const [showEdit, setShowEdit] = useState(false);
+  const [editScope, setEditScope] = useState<"solo" | "siguientes" | "serie">("solo");
+  const [editForm, setEditForm] = useState({ titulo: "", horaInicio: "", horaFin: "", tipo: "", notas: "" });
+  const [isEditSaving, setIsEditSaving] = useState(false);
+
+  const [showCancel, setShowCancel] = useState(false);
+  const [cancelScope, setCancelScope] = useState<"solo" | "siguientes" | "serie">("solo");
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  useEffect(() => {
+    if (selectedCita && showEdit) {
+      setEditForm({
+        titulo: selectedCita.titulo,
+        horaInicio: selectedCita.horaInicio,
+        horaFin: selectedCita.horaFin,
+        tipo: selectedCita.tipo,
+        notas: selectedCita.notas ?? "",
+      });
+      setEditScope("solo");
+    }
+  }, [selectedCita, showEdit]);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["citas", rangeStart, rangeEnd] });
+    queryClient.invalidateQueries({ queryKey: ["citas"] });
+  };
+
+  const closeCreate = () => {
+    setShowCreate(false);
+    setForm({ ...DEFAULT_FORM });
+    setPatientSearch("");
+    setShowPatientDropdown(false);
+  };
+
+  const handleCreate = async () => {
+    if (!form.patientId) {
+      toast({ title: "Selecciona un paciente para continuar", variant: "destructive" });
+      return;
+    }
+    if (!form.fecha || !form.horaInicio || !form.horaFin) {
+      toast({ title: "Completa la fecha y horario", variant: "destructive" });
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const selectedPatient = (patients as any[]).find(p => String(p.id) === String(form.patientId));
+      const titulo = form.titulo.trim() || selectedPatient?.name || "Sesión";
+      const body: any = {
+        titulo,
+        fecha: form.fecha,
+        horaInicio: form.horaInicio,
+        horaFin: form.horaFin,
+        tipo: form.tipo,
+        notas: form.notas || null,
+        repetirSemanal: form.repetirSemanal,
+        repetirHasta: (form.repetirSemanal && !form.sinFechaFin && form.repetirHasta) ? form.repetirHasta : null,
+        patientId: parseInt(form.patientId),
+        professionalId: user?.id ?? null,
+      };
+      const res = await fetch("/api/citas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error("Error al crear cita");
+      const created = await res.json();
+      const count = Array.isArray(created) ? created.length : 1;
+      toast({ title: count > 1 ? `${count} citas creadas (serie semanal)` : "Cita creada" });
+      closeCreate();
+      invalidate();
+    } catch {
+      toast({ title: "Error al guardar", variant: "destructive" });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleEdit = async () => {
+    if (!selectedCita) return;
+    setIsEditSaving(true);
+    try {
+      const res = await fetch(`/api/citas/${selectedCita.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: editScope, ...editForm }),
+      });
+      if (!res.ok) throw new Error("Error al actualizar");
+      toast({ title: "Cita actualizada" });
+      setShowEdit(false);
+      setSelectedCita(null);
+      invalidate();
+    } catch {
+      toast({ title: "Error al actualizar", variant: "destructive" });
+    } finally {
+      setIsEditSaving(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!selectedCita) return;
+    setIsCancelling(true);
+    try {
+      const res = await fetch(`/api/citas/${selectedCita.id}?scope=${cancelScope}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Error");
+      const msg =
+        cancelScope === "serie" ? "Serie cancelada" :
+        cancelScope === "siguientes" ? "Esta y siguientes citas canceladas" :
+        "Cita cancelada";
+      toast({ title: msg });
+      setShowCancel(false);
+      setSelectedCita(null);
+      invalidate();
+    } catch {
+      toast({ title: "Error al cancelar", variant: "destructive" });
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
+  const citasForDay = (day: Date) =>
+    citas.filter(c => {
+      try { return isSameDay(parseISO(c.fecha), day) && c.status !== "cancelada"; }
+      catch { return false; }
+    });
+
+  const openCreateForDay = (day: Date, hour?: number) => {
+    const dateStr = format(day, "yyyy-MM-dd");
+    const h = hour !== undefined ? Math.max(START_HOUR, Math.min(END_HOUR - 1, hour)) : 9;
+    const hEnd = Math.min(h + 1, END_HOUR);
+    setForm({
+      ...DEFAULT_FORM,
+      fecha: dateStr,
+      horaInicio: `${String(h).padStart(2, "0")}:00`,
+      horaFin: `${String(hEnd).padStart(2, "0")}:00`,
+    });
+    setPatientSearch("");
+    setShowPatientDropdown(false);
+    setShowCreate(true);
+  };
+
+  const hoursLabels = Array.from({ length: TOTAL_HOURS }, (_, i) => START_HOUR + i);
+  const isToday = (d: Date) => isSameDay(d, new Date());
+
+  return (
+    <SidebarProvider>
+    <div className="flex h-screen bg-muted/30 overflow-hidden w-full">
+      <AppSidebar />
+      <SidebarInset className="flex flex-col overflow-hidden">
+        {/* Top bar */}
+        <header className="flex items-center gap-2 px-3 py-2 border-b border-border/50 bg-card shrink-0">
+          <SidebarTrigger className="-ml-1" />
+          <button
+            onClick={() => window.history.back()}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-lg hover:bg-muted/60"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" /> Menú
+          </button>
+          <div className="flex-1 flex items-center gap-2 max-w-2xl mx-auto">
+            <div>
+              <h1 className="text-base font-semibold">Agenda</h1>
+              <p className="text-xs text-muted-foreground capitalize">{formatWeekRange(currentMonday)}</p>
+            </div>
+            <div className="flex items-center gap-1 ml-4">
+              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setCurrentMonday(d => subWeeks(d, 1))}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button size="sm" variant="outline" className="h-8 text-xs px-3" onClick={() => setCurrentMonday(getMonday(new Date()))}>
+                Esta semana
+              </Button>
+              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setCurrentMonday(d => addWeeks(d, 1))}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            className="gap-1.5 hidden sm:flex"
+            onClick={() => openCreateForDay(new Date())}
+          >
+            <Plus className="h-4 w-4" /> Nueva cita
+          </Button>
+        </header>
+
+        {/* Calendar grid */}
+        <div className="flex-1 overflow-auto">
+          <div className="min-w-[700px]">
+            {/* Day headers */}
+            <div className="sticky top-0 z-10 bg-card border-b border-border/50 flex">
+              <div className="w-14 shrink-0" />
+              {days.map((day, i) => (
+                <button
+                  key={i}
+                  onClick={() => openCreateForDay(day)}
+                  className={`flex-1 text-center py-2 border-l border-border/40 first:border-l-0 transition-colors active:bg-primary/10 hover:bg-muted/40 ${isToday(day) ? "bg-primary/5" : ""}`}
+                >
+                  <p className={`text-xs font-semibold uppercase tracking-wide ${isToday(day) ? "text-primary" : "text-muted-foreground"}`}>
+                    {DAYS_ES[i]}
+                  </p>
+                  <p className={`text-lg font-bold font-display mt-0.5 leading-none ${isToday(day) ? "text-primary" : "text-foreground"}`}>
+                    {format(day, "d")}
+                  </p>
+                  {isToday(day) && (
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary mt-1" />
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Time grid */}
+            <div className="flex">
+              {/* Hour labels */}
+              <div className="w-14 shrink-0 relative" style={{ height: GRID_HEIGHT + 16 }}>
+                {hoursLabels.map(h => (
+                  <div
+                    key={h}
+                    className="absolute right-2 text-[10px] text-muted-foreground font-medium leading-none -translate-y-2"
+                    style={{ top: (h - START_HOUR) * HOUR_PX }}
+                  >
+                    {String(h).padStart(2, "0")}:00
+                  </div>
+                ))}
+              </div>
+
+              {/* Day columns */}
+              {days.map((day, dayIdx) => {
+                const dayCitas = citasForDay(day);
+                return (
+                  <div
+                    key={dayIdx}
+                    className={`flex-1 relative border-l border-border/40 first:border-l-0 cursor-pointer group/col ${isToday(day) ? "bg-primary/[0.02]" : ""}`}
+                    style={{ height: GRID_HEIGHT + 16 }}
+                    onClick={e => {
+                      if ((e.target as HTMLElement).closest("button")) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const relY = e.clientY - rect.top;
+                      const hour = Math.floor(relY / HOUR_PX) + START_HOUR;
+                      openCreateForDay(day, hour);
+                    }}
+                  >
+                    {/* Hour grid lines */}
+                    {hoursLabels.map(h => (
+                      <div
+                        key={h}
+                        className="absolute left-0 right-0 border-t border-border/50"
+                        style={{ top: (h - START_HOUR) * HOUR_PX }}
+                      />
+                    ))}
+                    {/* Half-hour dashed lines */}
+                    {hoursLabels.map(h => (
+                      <div
+                        key={`h-${h}`}
+                        className="absolute left-0 right-0 border-t border-dashed border-border/50/80"
+                        style={{ top: (h - START_HOUR) * HOUR_PX + HOUR_PX / 2 }}
+                      />
+                    ))}
+
+                    {/* Appointments */}
+                    {dayCitas.map(cita => {
+                      const top = topPx(cita.horaInicio);
+                      const h = heightPx(cita.horaInicio, cita.horaFin);
+                      const colors = TIPO_COLORS[cita.tipo] ?? TIPO_COLORS.otro;
+                      const durationMins = timeToMinutes(cita.horaFin) - timeToMinutes(cita.horaInicio);
+                      const citaPatient = cita.patientId
+                        ? (patients as any[]).find(p => p.id === cita.patientId)
+                        : null;
+                      const displayName = citaPatient?.name ?? cita.titulo;
+                      return (
+                        <button
+                          key={cita.id}
+                          onClick={() => setSelectedCita(cita)}
+                          className={`absolute left-0.5 right-0.5 rounded-sm border-l-2 text-left overflow-hidden transition-all hover:brightness-95 active:scale-[0.98] ${colors.bg} ${colors.border}`}
+                          style={{ top: top + 1, height: h - 2, zIndex: 1 }}
+                        >
+                          <div className="px-1 py-0.5 h-full flex flex-col justify-start">
+                            <span className={`text-[10px] font-semibold truncate leading-tight ${colors.text}`}>
+                              {displayName}
+                            </span>
+                            {h > 24 && (
+                              <span className={`text-[9px] leading-none ${colors.text} opacity-50`}>
+                                {cita.horaInicio}{h > 36 ? ` · ${durationMins}min` : ""}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Mobile floating action button ───────────────────────────────────── */}
+        <button
+          onClick={() => openCreateForDay(new Date())}
+          className="sm:hidden fixed bottom-6 right-5 z-50 flex items-center gap-2 bg-primary text-primary-foreground rounded-full shadow-lg px-5 py-3.5 text-sm font-semibold active:scale-95 transition-transform"
+          aria-label="Nueva cita"
+        >
+          <Plus className="h-5 w-5" />
+          Nueva cita
+        </button>
+      </SidebarInset>
+
+      {/* ── Create appointment modal ────────────────────────────────────────────── */}
+      <Dialog open={showCreate} onOpenChange={o => { if (!o && !isSaving) closeCreate(); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarDays className="h-5 w-5 text-primary" /> Nueva cita
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            {/* Patient selector with search */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground/70">Paciente *</label>
+              {form.patientId ? (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-primary/40 bg-primary/5">
+                  <User className="h-4 w-4 text-primary shrink-0" />
+                  <span className="text-sm font-medium flex-1">
+                    {(patients as any[]).find(p => String(p.id) === String(form.patientId))?.name ?? "Paciente"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setForm(f => ({ ...f, patientId: "", titulo: "" })); setPatientSearch(""); }}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  <Input
+                    placeholder="Buscar paciente…"
+                    value={patientSearch}
+                    onChange={e => { setPatientSearch(e.target.value); setShowPatientDropdown(true); }}
+                    onFocus={() => setShowPatientDropdown(true)}
+                    className="pl-9 text-sm"
+                  />
+                  {showPatientDropdown && (
+                    <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-white shadow-lg max-h-48 overflow-y-auto">
+                      {(patients as any[])
+                        .filter((p: any) =>
+                          !patientSearch || p.name?.toLowerCase().includes(patientSearch.toLowerCase())
+                        )
+                        .map((p: any) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={() => {
+                              setForm(f => ({ ...f, patientId: String(p.id), titulo: p.name }));
+                              setPatientSearch("");
+                              setShowPatientDropdown(false);
+                            }}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/60 text-left"
+                          >
+                            <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            {p.name}
+                          </button>
+                        ))}
+                      {(patients as any[]).filter((p: any) =>
+                        !patientSearch || p.name?.toLowerCase().includes(patientSearch.toLowerCase())
+                      ).length === 0 && (
+                        <div className="px-3 py-3 text-sm text-muted-foreground text-center">
+                          {(patients as any[]).length === 0
+                            ? "No tienes pacientes asignados"
+                            : "No se encontró ningún paciente"}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {!form.patientId && (
+                <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" /> Obligatorio — selecciona un paciente para guardar la cita
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground/70">Tipo</label>
+                <select
+                  value={form.tipo}
+                  onChange={e => setForm(f => ({ ...f, tipo: e.target.value }))}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  {TIPOS.map(t => <option key={t} value={t}>{TIPO_LABELS[t]}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground/70">Fecha *</label>
+                <Input type="date" value={form.fecha} onChange={e => setForm(f => ({ ...f, fecha: e.target.value }))} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground/70">Hora inicio *</label>
+                <Input type="time" value={form.horaInicio} onChange={e => setForm(f => ({ ...f, horaInicio: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground/70">Hora fin *</label>
+                <Input type="time" value={form.horaFin} onChange={e => setForm(f => ({ ...f, horaFin: e.target.value }))} />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground/70">Notas</label>
+              <Textarea
+                value={form.notas}
+                onChange={e => setForm(f => ({ ...f, notas: e.target.value }))}
+                placeholder="Observaciones opcionales…"
+                rows={2}
+                className="resize-none text-sm"
+              />
+            </div>
+
+            {/* Recurrence */}
+            <div className="rounded-xl border border-border/60 p-4 space-y-3 bg-muted/40">
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.repetirSemanal}
+                  onChange={e => setForm(f => ({ ...f, repetirSemanal: e.target.checked }))}
+                  className="h-4 w-4 rounded border-border text-primary accent-primary"
+                />
+                <div className="flex items-center gap-1.5">
+                  <Repeat className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-semibold text-foreground">Repetir semanalmente</span>
+                </div>
+              </label>
+
+              {form.repetirSemanal && (
+                <div className="pl-6 space-y-2.5">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={form.sinFechaFin}
+                      onChange={() => setForm(f => ({ ...f, sinFechaFin: true }))}
+                      className="accent-primary"
+                    />
+                    <span className="text-sm text-foreground/80">Indefinidamente</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={!form.sinFechaFin}
+                      onChange={() => setForm(f => ({ ...f, sinFechaFin: false }))}
+                      className="accent-primary"
+                    />
+                    <span className="text-sm text-foreground/80">Hasta una fecha:</span>
+                  </label>
+                  {!form.sinFechaFin && (
+                    <Input
+                      type="date"
+                      value={form.repetirHasta}
+                      min={form.fecha}
+                      onChange={e => setForm(f => ({ ...f, repetirHasta: e.target.value }))}
+                      className="ml-5 w-auto"
+                    />
+                  )}
+                  <p className="text-[10px] text-muted-foreground ml-0.5">
+                    {form.sinFechaFin
+                      ? "Se crearán citas hasta 1 año desde la fecha indicada."
+                      : `Se crearán citas cada semana hasta el ${form.repetirHasta || "…"}.`}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={closeCreate} disabled={isSaving}>Cancelar</Button>
+            <Button onClick={handleCreate} disabled={isSaving || !form.patientId}>
+              {isSaving ? "Guardando…" : form.repetirSemanal ? "Crear serie" : "Crear cita"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Appointment detail / quick actions ─────────────────────────────────── */}
+      {selectedCita && !showEdit && !showCancel && (
+        <Dialog open onOpenChange={() => setSelectedCita(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 pr-6 text-base">
+                {(() => {
+                  const p = selectedCita.patientId ? (patients as any[]).find(pt => pt.id === selectedCita.patientId) : null;
+                  return p ? p.name : selectedCita.titulo;
+                })()}
+              </DialogTitle>
+              <DialogDescription asChild>
+                <div className="space-y-2 pt-1">
+                  {selectedCita.patientId && (() => {
+                    const p = (patients as any[]).find(pt => pt.id === selectedCita.patientId);
+                    return p ? (
+                      <div className="flex items-center gap-1.5 text-xs text-primary font-medium">
+                        <User className="h-3.5 w-3.5 shrink-0" />
+                        {p.name}
+                        {p.dateOfBirth && (
+                          <span className="text-muted-foreground font-normal">
+                            · {new Date().getFullYear() - new Date(p.dateOfBirth).getFullYear()} años
+                          </span>
+                        )}
+                      </div>
+                    ) : null;
+                  })()}
+                  <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Calendar className="h-3.5 w-3.5 shrink-0" />
+                      <span className="capitalize">{format(parseISO(selectedCita.fecha), "EEEE d 'de' MMMM", { locale: es })}</span>
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <Clock className="h-3.5 w-3.5 shrink-0" />
+                      {selectedCita.horaInicio} – {selectedCita.horaFin}
+                      <span className="text-muted-foreground">({timeToMinutes(selectedCita.horaFin) - timeToMinutes(selectedCita.horaInicio)} min)</span>
+                    </span>
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    <Badge variant="outline" className={`text-xs ${TIPO_COLORS[selectedCita.tipo]?.text ?? ""}`}>
+                      {TIPO_LABELS[selectedCita.tipo] ?? selectedCita.tipo}
+                    </Badge>
+                    {selectedCita.serieId && (
+                      <Badge variant="secondary" className="text-xs gap-1">
+                        <Repeat className="h-3 w-3" /> Semanal
+                      </Badge>
+                    )}
+                    {selectedCita.status === "cancelada" && (
+                      <Badge variant="outline" className="text-xs text-destructive border-destructive/30">Cancelada</Badge>
+                    )}
+                  </div>
+                  {selectedCita.notas && (
+                    <p className="text-xs text-muted-foreground italic">{selectedCita.notas}</p>
+                  )}
+                </div>
+              </DialogDescription>
+            </DialogHeader>
+            {selectedCita.status !== "cancelada" && (
+              <DialogFooter className="flex gap-2 sm:justify-between">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="gap-1.5"
+                  onClick={() => { setCancelScope("solo"); setShowCancel(true); }}
+                >
+                  <X className="h-3.5 w-3.5" /> Cancelar
+                </Button>
+                <Button
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => setShowEdit(true)}
+                >
+                  <Pencil className="h-3.5 w-3.5" /> Editar
+                </Button>
+              </DialogFooter>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* ── Edit modal ───────────────────────────────────────────────────────────── */}
+      {selectedCita && showEdit && (
+        <Dialog open onOpenChange={() => { setShowEdit(false); }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-4 w-4 text-primary" /> Editar cita
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-1">
+              {/* Scope selection — only if part of a series */}
+              {selectedCita.serieId && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-amber-700 flex items-center gap-1.5">
+                    <Repeat className="h-3.5 w-3.5" /> Cita recurrente — ¿qué deseas modificar?
+                  </p>
+                  {(["solo", "siguientes", "serie"] as const).map(s => (
+                    <label key={s} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        checked={editScope === s}
+                        onChange={() => setEditScope(s)}
+                        className="accent-amber-600"
+                      />
+                      <span className="text-sm text-amber-800">
+                        {s === "solo"       ? "Solo esta ocurrencia"          :
+                         s === "siguientes" ? "Esta y las siguientes citas"   :
+                                             "Toda la serie"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground/70">Hora inicio</label>
+                  <Input type="time" value={editForm.horaInicio} onChange={e => setEditForm(f => ({ ...f, horaInicio: e.target.value }))} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground/70">Hora fin</label>
+                  <Input type="time" value={editForm.horaFin} onChange={e => setEditForm(f => ({ ...f, horaFin: e.target.value }))} />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground/70">Tipo</label>
+                <select
+                  value={editForm.tipo}
+                  onChange={e => setEditForm(f => ({ ...f, tipo: e.target.value }))}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  {TIPOS.map(t => <option key={t} value={t}>{TIPO_LABELS[t]}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground/70">Notas</label>
+                <Textarea
+                  value={editForm.notas}
+                  onChange={e => setEditForm(f => ({ ...f, notas: e.target.value }))}
+                  rows={2}
+                  className="resize-none text-sm"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setShowEdit(false)} disabled={isEditSaving}>Cancelar</Button>
+              <Button onClick={handleEdit} disabled={isEditSaving}>
+                {isEditSaving ? "Guardando…" : "Guardar cambios"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* ── Cancel confirm modal ─────────────────────────────────────────────────── */}
+      {selectedCita && showCancel && (
+        <Dialog open onOpenChange={() => { setShowCancel(false); }}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-red-700">
+                <AlertCircle className="h-5 w-5" /> Cancelar cita
+              </DialogTitle>
+              <DialogDescription>
+                {`¿Cancelar "${selectedCita.titulo}"?`}
+              </DialogDescription>
+            </DialogHeader>
+            {selectedCita.serieId ? (
+              <div className="space-y-2">
+                {(["solo", "siguientes", "serie"] as const).map(s => (
+                  <label key={s} className="flex items-start gap-2.5 cursor-pointer p-2.5 rounded-lg hover:bg-red-50 transition-colors">
+                    <input
+                      type="radio"
+                      checked={cancelScope === s}
+                      onChange={() => setCancelScope(s)}
+                      className="accent-red-600 mt-0.5"
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-foreground">
+                        {s === "solo"       ? "Solo esta ocurrencia"        :
+                         s === "siguientes" ? "Esta y las siguientes citas" :
+                                             "Toda la serie"}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {s === "solo"       ? "Las demás citas de la serie se mantienen."     :
+                         s === "siguientes" ? "Se cancelan esta y todas las citas futuras."   :
+                                             "Se cancelan todas las citas de la serie."}
+                      </p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-foreground/70">Esta acción marcará la cita como cancelada.</p>
+            )}
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setShowCancel(false)} disabled={isCancelling}>Volver</Button>
+              <Button variant="destructive" onClick={handleCancel} disabled={isCancelling}>
+                {isCancelling ? "Cancelando…" : "Confirmar"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+    </SidebarProvider>
+  );
+}
