@@ -1,0 +1,38 @@
+import { Router, type IRouter } from "express";
+import healthRouter from "./health";
+import patientsRouter from "./patients";
+import professionalsRouter from "./professionals";
+import sessionsRouter from "./sessions";
+import goalsRouter from "./goals";
+import dashboardRouter from "./dashboard";
+import goalLibraryRouter from "./goal-library";
+import registrosClinicosRouter from "./registros-clinicos";
+import actividadesRouter from "./actividades";
+import patientProfessionalsRouter from "./patient-professionals";
+import goalCodesRouter from "./goal-codes";
+import authRouter from "./auth";
+import goalGuidanceRouter from "./goal-guidance";
+import citasRouter from "./citas";
+import usersRouter from "./users";
+import pagosRouter from "./pagos";
+
+const router: IRouter = Router();
+
+router.use(authRouter);
+router.use(usersRouter);
+router.use(pagosRouter);
+router.use(healthRouter);
+router.use(patientsRouter);
+router.use(professionalsRouter);
+router.use(sessionsRouter);
+router.use(goalsRouter);
+router.use(dashboardRouter);
+router.use(goalLibraryRouter);
+router.use(registrosClinicosRouter);
+router.use(actividadesRouter);
+router.use(patientProfessionalsRouter);
+router.use(goalCodesRouter);
+router.use(goalGuidanceRouter);
+router.use(citasRouter);
+
+export default router;
