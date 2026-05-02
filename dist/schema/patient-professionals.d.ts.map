@@ -1,0 +1,1 @@
+{"version":3,"file":"patient-professionals.d.ts","sourceRoot":"","sources":["../../src/schema/patient-professionals.ts"],"names":[],"mappings":"AAEA,eAAO,MAAM,yBAAyB;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAKpC,CAAC;AAEH,MAAM,MAAM,mBAAmB,GAAG,OAAO,yBAAyB,CAAC,YAAY,CAAC;AAChF,MAAM,MAAM,yBAAyB,GAAG,OAAO,yBAAyB,CAAC,YAAY,CAAC"}

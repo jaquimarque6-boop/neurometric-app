@@ -1,19 +1,23 @@
-import app from "./app";
+import { drizzle } from "drizzle-orm/node-postgres";
+import pg from "pg";
+import * as schema from "./schema";
 
-const rawPort = process.env["PORT"];
+const { Pool } = pg;
 
-if (!rawPort) {
+if (!process.env.DATABASE_URL) {
   throw new Error(
-    "PORT environment variable is required but was not provided.",
+    "DATABASE_URL must be set. Did you forget to provision a database?",
   );
 }
 
-const port = Number(rawPort);
-
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
+function buildConnectionUrl(url: string): string {
+  if (process.env.NODE_ENV !== "production") return url;
+  const u = new URL(url);
+  u.searchParams.set("sslmode", "verify-full");
+  return u.toString();
 }
 
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
-});
+export const pool = new Pool({ connectionString: buildConnectionUrl(process.env.DATABASE_URL) });
+export const db = drizzle(pool, { schema });
+
+export * from "./schema";
