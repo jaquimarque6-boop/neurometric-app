@@ -1,0 +1,1 @@
+{"version":3,"file":"createRegistroClinico.d.ts","sourceRoot":"","sources":["../../../src/generated/types/createRegistroClinico.ts"],"names":[],"mappings":"AAAA;;;;;;GAMG;AAEH,MAAM,WAAW,qBAAqB;IACpC,SAAS,EAAE,MAAM,CAAC;IAClB,cAAc,CAAC,EAAE,MAAM,CAAC;IACxB,KAAK,EAAE,MAAM,CAAC;IACd,aAAa,CAAC,EAAE,MAAM,CAAC;IACvB,aAAa,CAAC,EAAE,MAAM,CAAC;IACvB,oBAAoB,CAAC,EAAE,MAAM,CAAC;CAC/B"}
