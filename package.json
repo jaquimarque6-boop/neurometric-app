@@ -1,24 +1,16 @@
 {
-  "name": "@workspace/scripts",
+  "name": "workspace",
   "version": "0.0.0",
-  "private": true,
-  "type": "module",
+  "license": "MIT",
   "scripts": {
-    "hello": "tsx ./src/hello.ts",
-    "seed": "tsx ./src/seed.ts",
-    "seed-goal-library": "tsx ./src/seed-goal-library.ts",
-    "seed-csv": "tsx ./src/seed-csv.ts",
-    "seed-modules": "tsx ./src/seed-modules.ts",
-    "seed-goal-library-extended": "tsx ./src/seed-goal-library-extended.ts",
-    "seed-goal-library-200": "tsx ./src/seed-goal-library-200.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
-  "dependencies": {
-    "@workspace/db": "workspace:*",
-    "drizzle-orm": "catalog:"
-  },
+  "private": true,
   "devDependencies": {
-    "@types/node": "catalog:",
-    "tsx": "catalog:"
+    "typescript": "~5.9.2",
+    "prettier": "^3.8.1"
   }
 }
